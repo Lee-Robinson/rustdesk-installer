@@ -13,6 +13,4 @@ A secure, interactive script to install RustDesk clients on Linux servers and co
 
 ## Quick Start
 
-### One-Line Installation (Recommended)
-```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR-USERNAME/rustdesk-installer/main/install-rustdesk-client.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Lee-Robinson/rustdesk-installer/main/install-rustdesk-client.sh | sudo bash
