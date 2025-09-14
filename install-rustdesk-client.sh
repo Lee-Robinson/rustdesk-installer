@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# RustDesk Client Installation Script with Simplified Configuration
-# This script provides both simple (IP only) and advanced (full config) options
+# RustDesk Client Installation Script with Enhanced Configuration
+# This script installs RustDesk with virtual display support and password configuration
 
 set -e
 
@@ -44,12 +44,50 @@ show_banner() {
     clear
     echo -e "${CYAN}"
     echo "=================================================="
-    echo "      RustDesk Client Installer (Simplified)"
+    echo "   RustDesk Client Installer (Enhanced)"
     echo "=================================================="
     echo -e "${NC}"
     echo "This script will install RustDesk and configure it"
     echo "to use your custom RustDesk Server."
     echo
+}
+
+# Check if system is headless
+check_if_headless() {
+    if [ -z "$DISPLAY" ] && ! pgrep -x "Xorg" > /dev/null && ! pgrep -x "X" > /dev/null; then
+        return 0  # Headless
+    else
+        return 1  # Has display
+    fi
+}
+
+# Ask about virtual display setup
+ask_virtual_display() {
+    if check_if_headless; then
+        info "Headless server detected (no graphical display)"
+        echo "RustDesk requires a display to function properly."
+        echo
+        while true; do
+            read -p "Set up virtual display (Xvfb) for headless operation? (Y/n): " setup_virtual
+            case $setup_virtual in
+                [Yy]* | "" )
+                    SETUP_VIRTUAL_DISPLAY=true
+                    break
+                    ;;
+                [Nn]* )
+                    SETUP_VIRTUAL_DISPLAY=false
+                    warn "Proceeding without virtual display - RustDesk may not work properly"
+                    break
+                    ;;
+                * )
+                    error "Please answer yes (y) or no (n)"
+                    ;;
+            esac
+        done
+    else
+        info "Graphical display detected - virtual display not needed"
+        SETUP_VIRTUAL_DISPLAY=false
+    fi
 }
 
 # Get latest RustDesk version
@@ -235,6 +273,33 @@ choose_config_method() {
     fi
 }
 
+# Ask for RustDesk password
+get_rustdesk_password() {
+    header "RustDesk Password Configuration"
+    echo "Set a password for RustDesk remote access:"
+    echo
+
+    while true; do
+        read -s -p "Enter RustDesk password (min 6 characters): " RUSTDESK_PASSWORD
+        echo
+        if [[ ${#RUSTDESK_PASSWORD} -ge 6 ]]; then
+            read -s -p "Confirm password: " RUSTDESK_PASSWORD_CONFIRM
+            echo
+            if [[ "$RUSTDESK_PASSWORD" == "$RUSTDESK_PASSWORD_CONFIRM" ]]; then
+                break
+            else
+                error "Passwords do not match. Please try again."
+                echo
+            fi
+        else
+            error "Password must be at least 6 characters long."
+            echo
+        fi
+    done
+
+    info "Password configured successfully"
+}
+
 # Check if running as root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -264,25 +329,73 @@ install_dependencies() {
     case $DISTRO in
         ubuntu|debian)
             apt-get update -qq
-            apt-get install -y wget curl systemd ca-certificates >/dev/null 2>&1
+            if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
+                apt-get install -y wget curl systemd ca-certificates xvfb >/dev/null 2>&1
+            else
+                apt-get install -y wget curl systemd ca-certificates >/dev/null 2>&1
+            fi
             ;;
         centos|rhel|rocky|almalinux)
             if command -v dnf >/dev/null 2>&1; then
                 dnf update -y -q
-                dnf install -y wget curl systemd ca-certificates >/dev/null 2>&1
+                if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
+                    dnf install -y wget curl systemd ca-certificates xorg-x11-server-Xvfb >/dev/null 2>&1
+                else
+                    dnf install -y wget curl systemd ca-certificates >/dev/null 2>&1
+                fi
             else
                 yum update -y -q
-                yum install -y wget curl systemd ca-certificates >/dev/null 2>&1
+                if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
+                    yum install -y wget curl systemd ca-certificates xorg-x11-server-Xvfb >/dev/null 2>&1
+                else
+                    yum install -y wget curl systemd ca-certificates >/dev/null 2>&1
+                fi
             fi
             ;;
         fedora)
             dnf update -y -q
-            dnf install -y wget curl systemd ca-certificates >/dev/null 2>&1
+            if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
+                dnf install -y wget curl systemd ca-certificates xorg-x11-server-Xvfb >/dev/null 2>&1
+            else
+                dnf install -y wget curl systemd ca-certificates >/dev/null 2>&1
+            fi
             ;;
         *)
             warn "Unsupported distribution: $DISTRO. Proceeding anyway..."
             ;;
     esac
+}
+
+# Set up virtual display
+setup_virtual_display() {
+    if [[ "$SETUP_VIRTUAL_DISPLAY" != "true" ]]; then
+        return
+    fi
+
+    log "Setting up virtual display..."
+
+    # Create virtual display service
+    cat > /etc/systemd/system/xvfb.service << 'EOL'
+[Unit]
+Description=Virtual Framebuffer X11 service
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/Xvfb :0 -screen 0 1024x768x24 -ac +extension GLX +render -noreset
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+    # Enable and start virtual display
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable xvfb >/dev/null 2>&1
+    systemctl start xvfb >/dev/null 2>&1
+
+    info "Virtual display configured and started"
 }
 
 # Download and install RustDesk
@@ -392,14 +505,15 @@ custom-rendezvous-server = '$RUSTDESK_SERVER'
 relay-server = '$RUSTDESK_RELAY'
 api-server = '$RUSTDESK_API'
 key = '$RUSTDESK_KEY'
+password = '$RUSTDESK_PASSWORD'
 
 [display]
-allow-always-software-render = false
+allow-always-software-render = true
 allow-auto-reconnect = true
 
 [security] 
 allow-remote-config-modification = false
-approve-mode = 'click'
+approve-mode = 'password'
 EOL
 
     # Also create config for regular users (if any)
@@ -422,25 +536,45 @@ create_service() {
     log "Creating RustDesk systemd service..."
     
     find_rustdesk_binary
-    
-    cat > /etc/systemd/system/rustdesk.service << EOL
+
+    # Create service with appropriate dependencies
+    if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
+        cat > /etc/systemd/system/rustdesk.service << EOL
 [Unit]
 Description=RustDesk remote desktop service
-After=network.target
+After=network.target xvfb.service
+Requires=xvfb.service
 
 [Service]
-Type=forking
-LimitNOFILE=1000000
+Type=simple
+Environment=DISPLAY=:0
 ExecStart=$RUSTDESK_BINARY --service
-TimeoutStopSec=5
-KillMode=mixed
 Restart=always
+RestartSec=10
 User=root
 Group=root
 
 [Install]
 WantedBy=multi-user.target
 EOL
+    else
+        cat > /etc/systemd/system/rustdesk.service << EOL
+[Unit]
+Description=RustDesk remote desktop service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$RUSTDESK_BINARY --service
+Restart=always
+RestartSec=10
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
+EOL
+    fi
 
     # Enable and start the service
     systemctl daemon-reload >/dev/null 2>&1
@@ -448,6 +582,23 @@ EOL
     systemctl start rustdesk >/dev/null 2>&1
     
     log "RustDesk service created and started"
+}
+
+# Set RustDesk password
+set_rustdesk_password() {
+    log "Setting RustDesk password..."
+    
+    # Wait a moment for service to be ready
+    sleep 3
+    
+    # Set password with proper environment
+    if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
+        DISPLAY=:0 rustdesk --password "$RUSTDESK_PASSWORD" >/dev/null 2>&1
+    else
+        rustdesk --password "$RUSTDESK_PASSWORD" >/dev/null 2>&1
+    fi
+    
+    info "RustDesk password configured"
 }
 
 # Configure firewall (if needed)
@@ -498,14 +649,25 @@ verify_installation() {
         error "✗ Configuration file missing"
         return 1
     fi
+
+    # Check virtual display if enabled
+    if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
+        if systemctl is-active xvfb >/dev/null 2>&1; then
+            info "✓ Virtual display is running"
+        else
+            warn "✗ Virtual display is not running"
+        fi
+    fi
     
     # Display RustDesk ID if available
     sleep 5
     info "Retrieving RustDesk ID..."
-    if command -v rustdesk >/dev/null 2>&1; then
+    if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
+        RUSTDESK_ID=$(timeout 15 env DISPLAY=:0 rustdesk --get-id 2>/dev/null || echo "Not available yet - service may still be starting")
+    else
         RUSTDESK_ID=$(timeout 15 rustdesk --get-id 2>/dev/null || echo "Not available yet - service may still be starting")
-        info "RustDesk ID: $RUSTDESK_ID"
     fi
+    info "RustDesk ID: $RUSTDESK_ID"
 }
 
 # Show final instructions
@@ -520,8 +682,18 @@ show_instructions() {
     info "  • ID/Rendezvous Server: $RUSTDESK_SERVER"
     info "  • Relay Server: $RUSTDESK_RELAY"
     info "  • API Server: $RUSTDESK_API"
-    info "  • Server Key: Configured"
+    info "  • Password: Configured"
     echo
+    info "Connection Details:"
+    info "  • RustDesk ID: $RUSTDESK_ID"
+    info "  • Password: [Set during installation]"
+    echo
+    if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
+        info "Virtual Display:"
+        info "  • Status: Enabled for headless operation"
+        info "  • Service: xvfb.service"
+        echo
+    fi
     info "Service Management:"
     info "  • Start:   systemctl start rustdesk"
     info "  • Stop:    systemctl stop rustdesk"
@@ -531,13 +703,10 @@ show_instructions() {
     info "Configuration File:"
     info "  • Location: /root/.config/rustdesk/RustDesk2.toml"
     echo
-    info "Get RustDesk ID:"
-    info "  • Command: rustdesk --get-id"
-    echo
     info "Next Steps:"
     info "  1. The RustDesk service should be running automatically"
-    info "  2. Check your RustDesk Server web console"
-    info "  3. The server should appear in your directory shortly"
+    info "  2. Use the ID and password above to connect"
+    info "  3. Check your RustDesk Server web console"
     echo
     warn "Note: It may take a few moments for the server to appear in the directory"
     echo
@@ -547,13 +716,19 @@ show_instructions() {
 main() {
     show_banner
     check_root
+    ask_virtual_display
     get_latest_version
     choose_config_method
+    get_rustdesk_password
     detect_distro
     install_dependencies
+    if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
+        setup_virtual_display
+    fi
     install_rustdesk
     configure_rustdesk
     create_service
+    set_rustdesk_password
     configure_firewall
     verify_installation
     show_instructions
