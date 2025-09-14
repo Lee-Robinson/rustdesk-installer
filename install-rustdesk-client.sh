@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# RustDesk Client Installation Script with Interactive Configuration
-# This script installs RustDesk on Linux servers and configures them to use your custom RustDesk Server
-# Usage: curl -fsSL https://raw.githubusercontent.com/your-username/rustdesk-installer/main/install-rustdesk-client.sh | sudo bash
+# RustDesk Client Installation Script with Simplified Configuration
+# This script provides both simple (IP only) and advanced (full config) options
 
 set -e
 
@@ -13,6 +12,11 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+# Default ports (standard RustDesk server ports)
+DEFAULT_ID_PORT="21116"
+DEFAULT_RELAY_PORT="21117"
+DEFAULT_API_PORT="21114"
 
 # Logging function
 log() {
@@ -40,7 +44,7 @@ show_banner() {
     clear
     echo -e "${CYAN}"
     echo "=================================================="
-    echo "          RustDesk Client Installer"
+    echo "      RustDesk Client Installer (Simplified)"
     echo "=================================================="
     echo -e "${NC}"
     echo "This script will install RustDesk and configure it"
@@ -60,17 +64,81 @@ get_latest_version() {
     fi
 }
 
-# Prompt for server configuration
-get_server_config() {
-    header "Server Configuration"
-    echo "Please provide your RustDesk server details:"
+# Test server connectivity
+test_server_connectivity() {
+    local server_ip=$1
+    local port=$2
+    local service_name=$3
+    
+    if timeout 5 bash -c "</dev/tcp/$server_ip/$port" 2>/dev/null; then
+        info "✓ $service_name ($server_ip:$port) is reachable"
+        return 0
+    else
+        warn "✗ $service_name ($server_ip:$port) is not reachable"
+        return 1
+    fi
+}
+
+# Simplified server configuration
+get_server_config_simple() {
+    header "Simplified Server Configuration"
+    echo "Enter your RustDesk server details:"
+    echo "This mode uses standard ports and auto-detects services."
+    echo
+
+    # Get server IP/hostname
+    while true; do
+        read -p "Enter your RustDesk server IP or hostname: " SERVER_HOST
+        if [[ -n "$SERVER_HOST" ]]; then
+            # Basic validation
+            if [[ $SERVER_HOST =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ $SERVER_HOST =~ ^[a-zA-Z0-9.-]+$ ]]; then
+                break
+            else
+                error "Please enter a valid IP address or hostname"
+            fi
+        else
+            error "Server IP/hostname cannot be empty"
+        fi
+    done
+
+    # Auto-configure with standard ports
+    RUSTDESK_SERVER="${SERVER_HOST}:${DEFAULT_ID_PORT}"
+    RUSTDESK_RELAY="${SERVER_HOST}:${DEFAULT_RELAY_PORT}"
+    RUSTDESK_API="http://${SERVER_HOST}:${DEFAULT_API_PORT}"
+
+    # Test connectivity
+    echo
+    info "Testing server connectivity..."
+    test_server_connectivity "$SERVER_HOST" "$DEFAULT_ID_PORT" "ID Server"
+    test_server_connectivity "$SERVER_HOST" "$DEFAULT_RELAY_PORT" "Relay Server"
+    test_server_connectivity "$SERVER_HOST" "$DEFAULT_API_PORT" "API Server"
+    echo
+
+    # Get server key
+    while true; do
+        read -p "Enter your RustDesk server public key: " RUSTDESK_KEY
+        if [[ -n "$RUSTDESK_KEY" ]]; then
+            if [[ ${#RUSTDESK_KEY} -ge 20 ]]; then
+                break
+            else
+                error "Server key seems too short. Please check and try again."
+            fi
+        else
+            error "Server Key cannot be empty"
+        fi
+    done
+}
+
+# Advanced server configuration (original method)
+get_server_config_advanced() {
+    header "Advanced Server Configuration"
+    echo "Please provide your RustDesk server details with custom ports:"
     echo
 
     # ID/Rendezvous Server
     while true; do
         read -p "Enter ID Server (e.g., 192.168.1.100:21116): " RUSTDESK_SERVER
         if [[ -n "$RUSTDESK_SERVER" ]]; then
-            # Validate format (basic check)
             if [[ $RUSTDESK_SERVER =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]] || [[ $RUSTDESK_SERVER =~ ^[a-zA-Z0-9.-]+:[0-9]+$ ]]; then
                 break
             else
@@ -121,6 +189,34 @@ get_server_config() {
         else
             error "Server Key cannot be empty"
         fi
+    done
+}
+
+# Choose configuration method
+choose_config_method() {
+    echo
+    header "Configuration Method"
+    echo "Choose how you want to configure your RustDesk client:"
+    echo
+    echo "1) Simple - Just enter your server IP (uses standard ports)"
+    echo "2) Advanced - Specify custom ports and URLs"
+    echo
+
+    while true; do
+        read -p "Choose option (1 or 2): " choice
+        case $choice in
+            1)
+                get_server_config_simple
+                break
+                ;;
+            2)
+                get_server_config_advanced
+                break
+                ;;
+            *)
+                error "Please enter 1 or 2"
+                ;;
+        esac
     done
 
     echo
@@ -452,7 +548,7 @@ main() {
     show_banner
     check_root
     get_latest_version
-    get_server_config
+    choose_config_method
     detect_distro
     install_dependencies
     install_rustdesk
@@ -465,8 +561,8 @@ main() {
     log "Script execution completed!"
 }
 
-# Check if running interactively
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    # Running directly
+# Check if running interactively or piped
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]] || [[ -z "${BASH_SOURCE[0]}" ]]; then
+    # Running directly or piped through curl
     main "$@"
 fi
