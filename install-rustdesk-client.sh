@@ -52,6 +52,16 @@ show_banner() {
     echo
 }
 
+# Check if running non-interactively
+is_non_interactive() {
+    # Check if stdin is not a terminal (piped input) or if running in CI/automated environment
+    if [[ ! -t 0 ]] || [[ -n "$RUSTDESK_AUTO_INSTALL" ]] || [[ -n "$CI" ]] || [[ -n "$DEBIAN_FRONTEND" ]]; then
+        return 0  # Non-interactive
+    else
+        return 1  # Interactive
+    fi
+}
+
 # Check if system is headless
 check_if_headless() {
     if [ -z "$DISPLAY" ] && ! pgrep -x "Xorg" > /dev/null && ! pgrep -x "X" > /dev/null; then
@@ -67,23 +77,29 @@ ask_virtual_display() {
         info "Headless server detected (no graphical display)"
         echo "RustDesk requires a display to function properly."
         echo
-        while true; do
-            read -p "Set up virtual display (Xvfb) for headless operation? (Y/n): " setup_virtual
-            case $setup_virtual in
-                [Yy]* | "" )
-                    SETUP_VIRTUAL_DISPLAY=true
-                    break
-                    ;;
-                [Nn]* )
-                    SETUP_VIRTUAL_DISPLAY=false
-                    warn "Proceeding without virtual display - RustDesk may not work properly"
-                    break
-                    ;;
-                * )
-                    error "Please answer yes (y) or no (n)"
-                    ;;
-            esac
-        done
+        
+        if is_non_interactive; then
+            info "Non-interactive mode detected - automatically enabling virtual display"
+            SETUP_VIRTUAL_DISPLAY=true
+        else
+            while true; do
+                read -p "Set up virtual display (Xvfb) for headless operation? (Y/n): " setup_virtual
+                case $setup_virtual in
+                    [Yy]* | "" )
+                        SETUP_VIRTUAL_DISPLAY=true
+                        break
+                        ;;
+                    [Nn]* )
+                        SETUP_VIRTUAL_DISPLAY=false
+                        warn "Proceeding without virtual display - RustDesk may not work properly"
+                        break
+                        ;;
+                    * )
+                        error "Please answer yes (y) or no (n)"
+                        ;;
+                esac
+            done
+        fi
     else
         info "Graphical display detected - virtual display not needed"
         SETUP_VIRTUAL_DISPLAY=false
@@ -95,8 +111,8 @@ get_latest_version() {
     log "Fetching latest RustDesk version..."
     RUSTDESK_VERSION=$(curl -s https://api.github.com/repos/rustdesk/rustdesk/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
     if [[ -z "$RUSTDESK_VERSION" ]]; then
-        warn "Could not fetch latest version, using fallback version 1.2.3"
-        RUSTDESK_VERSION="1.2.3"
+        warn "Could not fetch latest version, using fallback version 1.4.1"
+        RUSTDESK_VERSION="1.4.1"
     else
         info "Latest RustDesk version: $RUSTDESK_VERSION"
     fi
@@ -115,6 +131,48 @@ test_server_connectivity() {
         warn "✗ $service_name ($server_ip:$port) is not reachable"
         return 1
     fi
+}
+
+# Automated simple server configuration for non-interactive mode
+get_server_config_simple_auto() {
+    header "Automated Server Configuration"
+    echo "Using environment variables or defaults for server configuration"
+    echo
+
+    # Get server configuration from environment variables or prompt for defaults
+    if [[ -n "$RUSTDESK_SERVER_HOST" ]]; then
+        SERVER_HOST="$RUSTDESK_SERVER_HOST"
+        info "Using server host from environment: $SERVER_HOST"
+    else
+        error "RUSTDESK_SERVER_HOST environment variable not set"
+        echo "For non-interactive installation, please set:"
+        echo "export RUSTDESK_SERVER_HOST='your.server.ip'"
+        echo "export RUSTDESK_SERVER_KEY='your_server_public_key'"
+        echo "export RUSTDESK_PASSWORD='your_desired_password'"
+        exit 1
+    fi
+
+    # Auto-configure with standard ports
+    RUSTDESK_SERVER="${SERVER_HOST}:${DEFAULT_ID_PORT}"
+    RUSTDESK_RELAY="${SERVER_HOST}:${DEFAULT_RELAY_PORT}"
+    RUSTDESK_API="http://${SERVER_HOST}:${DEFAULT_API_PORT}"
+
+    # Get server key from environment
+    if [[ -n "$RUSTDESK_SERVER_KEY" ]]; then
+        RUSTDESK_KEY="$RUSTDESK_SERVER_KEY"
+        info "Using server key from environment"
+    else
+        error "RUSTDESK_SERVER_KEY environment variable not set"
+        exit 1
+    fi
+
+    # Test connectivity
+    echo
+    info "Testing server connectivity..."
+    test_server_connectivity "$SERVER_HOST" "$DEFAULT_ID_PORT" "ID Server"
+    test_server_connectivity "$SERVER_HOST" "$DEFAULT_RELAY_PORT" "Relay Server"
+    test_server_connectivity "$SERVER_HOST" "$DEFAULT_API_PORT" "API Server"
+    echo
 }
 
 # Simplified server configuration
@@ -234,28 +292,34 @@ get_server_config_advanced() {
 choose_config_method() {
     echo
     header "Configuration Method"
-    echo "Choose how you want to configure your RustDesk client:"
-    echo
-    echo "1) Simple - Just enter your server IP (uses standard ports)"
-    echo "2) Advanced - Specify custom ports and URLs"
-    echo
+    
+    if is_non_interactive; then
+        info "Non-interactive mode - using Simple configuration (standard ports)"
+        get_server_config_simple_auto
+    else
+        echo "Choose how you want to configure your RustDesk client:"
+        echo
+        echo "1) Simple - Just enter your server IP (uses standard ports)"
+        echo "2) Advanced - Specify custom ports and URLs"
+        echo
 
-    while true; do
-        read -p "Choose option (1 or 2): " choice
-        case $choice in
-            1)
-                get_server_config_simple
-                break
-                ;;
-            2)
-                get_server_config_advanced
-                break
-                ;;
-            *)
-                error "Please enter 1 or 2"
-                ;;
-        esac
-    done
+        while true; do
+            read -p "Choose option (1 or 2): " choice
+            case $choice in
+                1)
+                    get_server_config_simple
+                    break
+                    ;;
+                2)
+                    get_server_config_advanced
+                    break
+                    ;;
+                *)
+                    error "Please enter 1 or 2"
+                    ;;
+            esac
+        done
+    fi
 
     echo
     header "Configuration Summary:"
@@ -265,11 +329,15 @@ choose_config_method() {
     info "Server Key: ${RUSTDESK_KEY:0:10}..." # Show only first 10 chars for security
     echo
 
-    read -p "Is this configuration correct? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Configuration cancelled. Please run the script again."
-        exit 1
+    if ! is_non_interactive; then
+        read -p "Is this configuration correct? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Configuration cancelled. Please run the script again."
+            exit 1
+        fi
+    else
+        info "Auto-accepting configuration in non-interactive mode"
     fi
 }
 
@@ -698,7 +766,7 @@ show_instructions() {
     echo
     info "Connection Details:"
     info "  • RustDesk ID: $RUSTDESK_ID"
-    info "  • Password: [Set during installation]"
+    info "  • Password: $RUSTDESK_PASSWORD"
     echo
     if [[ "$SETUP_VIRTUAL_DISPLAY" == "true" ]]; then
         info "Virtual Display:"
