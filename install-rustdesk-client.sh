@@ -48,6 +48,18 @@ show_banner() {
     echo
 }
 
+# Get latest RustDesk version
+get_latest_version() {
+    log "Fetching latest RustDesk version..."
+    RUSTDESK_VERSION=$(curl -s https://api.github.com/repos/rustdesk/rustdesk/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+    if [[ -z "$RUSTDESK_VERSION" ]]; then
+        warn "Could not fetch latest version, using fallback version 1.2.3"
+        RUSTDESK_VERSION="1.2.3"
+    else
+        info "Latest RustDesk version: $RUSTDESK_VERSION"
+    fi
+}
+
 # Prompt for server configuration
 get_server_config() {
     header "Server Configuration"
@@ -99,7 +111,7 @@ get_server_config() {
 
     # Server Key
     while true; do
-        read -p "Enter Server Key (e.g., ABC123...): " RUSTDESK_KEY
+        read -p "Enter Server Key (public key from your RustDesk server): " RUSTDESK_KEY
         if [[ -n "$RUSTDESK_KEY" ]]; then
             if [[ ${#RUSTDESK_KEY} -ge 20 ]]; then
                 break
@@ -156,15 +168,20 @@ install_dependencies() {
     case $DISTRO in
         ubuntu|debian)
             apt-get update -qq
-            apt-get install -y wget curl systemd >/dev/null 2>&1
+            apt-get install -y wget curl systemd ca-certificates >/dev/null 2>&1
             ;;
         centos|rhel|rocky|almalinux)
-            yum update -y -q
-            yum install -y wget curl systemd >/dev/null 2>&1
+            if command -v dnf >/dev/null 2>&1; then
+                dnf update -y -q
+                dnf install -y wget curl systemd ca-certificates >/dev/null 2>&1
+            else
+                yum update -y -q
+                yum install -y wget curl systemd ca-certificates >/dev/null 2>&1
+            fi
             ;;
         fedora)
             dnf update -y -q
-            dnf install -y wget curl systemd >/dev/null 2>&1
+            dnf install -y wget curl systemd ca-certificates >/dev/null 2>&1
             ;;
         *)
             warn "Unsupported distribution: $DISTRO. Proceeding anyway..."
@@ -198,24 +215,37 @@ install_rustdesk() {
     # Download RustDesk based on distribution
     case $DISTRO in
         ubuntu|debian)
-            PACKAGE_URL="https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-1.2.3-${RUSTDESK_ARCH}.deb"
-            info "Downloading RustDesk package..."
-            wget -q "$PACKAGE_URL" -O rustdesk.deb
+            PACKAGE_URL="https://github.com/rustdesk/rustdesk/releases/download/${RUSTDESK_VERSION}/rustdesk-${RUSTDESK_VERSION}-${RUSTDESK_ARCH}.deb"
+            info "Downloading RustDesk package: $PACKAGE_URL"
+            if ! wget -q "$PACKAGE_URL" -O rustdesk.deb; then
+                error "Failed to download RustDesk package"
+                exit 1
+            fi
             info "Installing RustDesk..."
             dpkg -i rustdesk.deb >/dev/null 2>&1 || apt-get install -f -y >/dev/null 2>&1
             ;;
         centos|rhel|rocky|almalinux|fedora)
-            PACKAGE_URL="https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-1.2.3-${RUSTDESK_ARCH}.rpm"
-            info "Downloading RustDesk package..."
-            wget -q "$PACKAGE_URL" -O rustdesk.rpm
+            PACKAGE_URL="https://github.com/rustdesk/rustdesk/releases/download/${RUSTDESK_VERSION}/rustdesk-${RUSTDESK_VERSION}-${RUSTDESK_ARCH}.rpm"
+            info "Downloading RustDesk package: $PACKAGE_URL"
+            if ! wget -q "$PACKAGE_URL" -O rustdesk.rpm; then
+                error "Failed to download RustDesk package"
+                exit 1
+            fi
             info "Installing RustDesk..."
-            rpm -ivh rustdesk.rpm >/dev/null 2>&1 || yum install -y rustdesk.rpm >/dev/null 2>&1
+            if command -v dnf >/dev/null 2>&1; then
+                dnf install -y rustdesk.rpm >/dev/null 2>&1
+            else
+                rpm -ivh rustdesk.rpm >/dev/null 2>&1 || yum install -y rustdesk.rpm >/dev/null 2>&1
+            fi
             ;;
         *)
             # Generic installation - download AppImage
-            PACKAGE_URL="https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-1.2.3-${RUSTDESK_ARCH}.AppImage"
-            info "Downloading RustDesk AppImage..."
-            wget -q "$PACKAGE_URL" -O /usr/local/bin/rustdesk
+            PACKAGE_URL="https://github.com/rustdesk/rustdesk/releases/download/${RUSTDESK_VERSION}/rustdesk-${RUSTDESK_VERSION}-${RUSTDESK_ARCH}.AppImage"
+            info "Downloading RustDesk AppImage: $PACKAGE_URL"
+            if ! wget -q "$PACKAGE_URL" -O /usr/local/bin/rustdesk; then
+                error "Failed to download RustDesk AppImage"
+                exit 1
+            fi
             chmod +x /usr/local/bin/rustdesk
             ;;
     esac
@@ -225,6 +255,31 @@ install_rustdesk() {
     rm -rf "$TEMP_DIR"
     
     log "RustDesk installation completed"
+}
+
+# Find RustDesk binary path
+find_rustdesk_binary() {
+    RUSTDESK_BINARY=""
+    
+    # Common locations
+    for path in "/usr/bin/rustdesk" "/usr/local/bin/rustdesk" "/opt/rustdesk/rustdesk"; do
+        if [ -x "$path" ]; then
+            RUSTDESK_BINARY="$path"
+            break
+        fi
+    done
+    
+    # If not found in common locations, search
+    if [ -z "$RUSTDESK_BINARY" ]; then
+        RUSTDESK_BINARY=$(which rustdesk 2>/dev/null || find / -name rustdesk -type f -executable 2>/dev/null | head -1)
+    fi
+    
+    if [ -z "$RUSTDESK_BINARY" ]; then
+        error "RustDesk binary not found"
+        exit 1
+    fi
+    
+    info "RustDesk binary found at: $RUSTDESK_BINARY"
 }
 
 # Configure RustDesk to use custom server
@@ -270,7 +325,9 @@ EOL
 create_service() {
     log "Creating RustDesk systemd service..."
     
-    cat > /etc/systemd/system/rustdesk.service << 'EOL'
+    find_rustdesk_binary
+    
+    cat > /etc/systemd/system/rustdesk.service << EOL
 [Unit]
 Description=RustDesk remote desktop service
 After=network.target
@@ -278,7 +335,7 @@ After=network.target
 [Service]
 Type=forking
 LimitNOFILE=1000000
-ExecStart=/usr/bin/rustdesk --service
+ExecStart=$RUSTDESK_BINARY --service
 TimeoutStopSec=5
 KillMode=mixed
 Restart=always
@@ -334,7 +391,8 @@ verify_installation() {
     if systemctl is-active rustdesk >/dev/null 2>&1; then
         info "✓ RustDesk service is running"
     else
-        warn "✗ RustDesk service is not running - it may need a moment to start"
+        warn "✗ RustDesk service is not running - attempting to start..."
+        systemctl start rustdesk >/dev/null 2>&1 || warn "Failed to start service"
     fi
     
     # Check if config file exists
@@ -346,10 +404,10 @@ verify_installation() {
     fi
     
     # Display RustDesk ID if available
-    sleep 3
+    sleep 5
     info "Retrieving RustDesk ID..."
     if command -v rustdesk >/dev/null 2>&1; then
-        RUSTDESK_ID=$(timeout 10 rustdesk --get-id 2>/dev/null || echo "Not available yet - service may still be starting")
+        RUSTDESK_ID=$(timeout 15 rustdesk --get-id 2>/dev/null || echo "Not available yet - service may still be starting")
         info "RustDesk ID: $RUSTDESK_ID"
     fi
 }
@@ -377,6 +435,9 @@ show_instructions() {
     info "Configuration File:"
     info "  • Location: /root/.config/rustdesk/RustDesk2.toml"
     echo
+    info "Get RustDesk ID:"
+    info "  • Command: rustdesk --get-id"
+    echo
     info "Next Steps:"
     info "  1. The RustDesk service should be running automatically"
     info "  2. Check your RustDesk Server web console"
@@ -390,6 +451,7 @@ show_instructions() {
 main() {
     show_banner
     check_root
+    get_latest_version
     get_server_config
     detect_distro
     install_dependencies
