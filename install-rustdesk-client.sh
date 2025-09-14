@@ -276,26 +276,38 @@ choose_config_method() {
 # Ask for RustDesk password
 get_rustdesk_password() {
     header "RustDesk Password Configuration"
-    echo "Set a password for RustDesk remote access:"
-    echo
-
-    while true; do
-        read -s -p "Enter RustDesk password (min 6 characters): " RUSTDESK_PASSWORD
+    
+    if is_non_interactive; then
+        if [[ -n "$RUSTDESK_PASSWORD" ]]; then
+            info "Using password from environment variable"
+        else
+            info "No password provided - generating random password"
+            RUSTDESK_PASSWORD=$(openssl rand -base64 12)
+            info "Generated password: $RUSTDESK_PASSWORD"
+            info "Please save this password for future connections"
+        fi
+    else
+        echo "Set a password for RustDesk remote access:"
         echo
-        if [[ ${#RUSTDESK_PASSWORD} -ge 6 ]]; then
-            read -s -p "Confirm password: " RUSTDESK_PASSWORD_CONFIRM
+
+        while true; do
+            read -s -p "Enter RustDesk password (min 6 characters): " RUSTDESK_PASSWORD
             echo
-            if [[ "$RUSTDESK_PASSWORD" == "$RUSTDESK_PASSWORD_CONFIRM" ]]; then
-                break
+            if [[ ${#RUSTDESK_PASSWORD} -ge 6 ]]; then
+                read -s -p "Confirm password: " RUSTDESK_PASSWORD_CONFIRM
+                echo
+                if [[ "$RUSTDESK_PASSWORD" == "$RUSTDESK_PASSWORD_CONFIRM" ]]; then
+                    break
+                else
+                    error "Passwords do not match. Please try again."
+                    echo
+                fi
             else
-                error "Passwords do not match. Please try again."
+                error "Password must be at least 6 characters long."
                 echo
             fi
-        else
-            error "Password must be at least 6 characters long."
-            echo
-        fi
-    done
+        done
+    fi
 
     info "Password configured successfully"
 }
