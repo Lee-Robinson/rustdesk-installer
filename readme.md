@@ -1,3 +1,11 @@
+
+<img width="763" height="683" alt="Screenshot 2025-09-20 at 15 15 25" src="https://github.com/user-attachments/assets/c1172652-2b4d-463f-bdcc-886c496dc7a9" />
+
+
+
+
+
+
 # RustDesk Client Installer
 
 A comprehensive bash script for automated RustDesk client installation and configuration on Linux servers. This script simplifies the deployment of RustDesk clients across multiple servers with both interactive and non-interactive modes, automatic headless server detection, and virtual display setup.
